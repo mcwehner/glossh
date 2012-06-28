@@ -1,0 +1,109 @@
+#!/bin/bash
+
+set -e
+
+APP_DIR=$(cd $(dirname $0); pwd)
+APP_NAME=$(basename $0)
+APP_PID=$$
+TMP_DIRNAME='/tmp/ssh-termcolors'
+
+# MCW: Color schemes
+# TODO: Label these with comments.
+COLORS=(        \
+    '#1b0000'   \
+    '#001b00'   \
+    '#00001b'   \
+)
+
+function emit_startup_warning
+{
+    # MCW: Warning message, since this is *not* the real ssh binary.
+    local bold="\033[1m" normal="\033[0m"
+    
+    echo -e "${bold}Using modified ssh at \`${APP_DIR}/${APP_NAME}'${normal}" && echo
+}
+
+function convert_webhex
+{
+    local webhex=${1:1}
+    local component_width=2
+    local is_16_bit=
+    
+    # MCW: lets us deal with 8-bit color values
+    if [ ${#webhex} -ge 12 ]; then
+        component_width=4
+        is_16_bit="true"
+    fi
+    
+    for color in red green blue; do
+        local component=${webhex:0:component_width}
+        
+        if [ $is_16_bit ]; then
+            local ${color}=$(( 0x${component} ))
+        else
+            local ${color}=$(( 0xFFFF * 0x${component} / 0xFF ))
+        fi
+        
+        webhex=${webhex:component_width}
+    done
+    
+    printf "%s,%s,%s" $red $green $blue
+}
+
+function set_termcolor
+{
+    local termcolor=$(convert_webhex $1)
+    
+    osascript -e "tell front window of app \"Terminal\" to set background color to {${termcolor}}"
+}
+
+function ssh_termcolor
+{
+    local ssh_hostname=$1 parent_pid=$2
+    local current_termcolor="#000000"
+    
+    if [ $(find /tmp/ -name ssh-termcolor-*-${ssh_hostname}) ]; then
+        local termcolor_filename=$(find /tmp/ -name ssh-termcolor-*-${ssh_hostname} | head -n 1)
+        current_termcolor=$(cat ${termcolor_filename})
+    else
+        local termcolor_host_count=$(( $(       \
+            find /tmp/ -name ssh-termcolor-*    \
+        |   sed -E 's/[0-9]+-//'                \
+        |   uniq                                \
+        |   wc -l                               \
+        ) ))
+        
+        current_termcolor=${COLORS[$(( ${termcolor_host_count} % ${#COLORS[@]} ))]}
+    fi
+    
+    echo -n "${current_termcolor}" > /tmp/ssh-termcolor-${parent_pid}-${ssh_hostname}
+    set_termcolor ${current_termcolor}
+}
+
+function ssh_connect
+{
+    emit_startup_warning
+    
+    # `ssh' will exit with a nonzero status in the event of
+    # a connection being terminated by the host, etc.
+    set +e
+        ssh -o 'PermitLocalCommand yes' -o "LocalCommand $0 --set-termcolor '%h' --parent-pid '$$'" $@
+    
+        rm -f /tmp/ssh-termcolor-$$*
+        set_termcolor '#000000'
+    set -e
+}
+
+# shows the usage info for the real ssh
+if [ -z "$1" ]; then
+    ssh; exit 1
+fi
+
+# special invocation as:
+#   ssh --set-termcolor <color> --parent-pid <pid>
+# TODO: Fix this so that the order of arguments doesn't matter.
+if [ '--set-termcolor' = "$1" ]; then
+    ssh_termcolor $2 $4
+else
+    ssh_connect $@
+fi
